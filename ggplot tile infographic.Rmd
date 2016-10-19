@@ -1,0 +1,258 @@
+---
+title: "Tile Infographic Using Ggplot"
+author: "Kay Sullivan Faith"
+date: "September 2016"
+output: dscoemarkdown::dscoe
+---
+
+Ggplot is a great tool for getting good looking visualizations of "tidy" data right out of the box, but with some creative customization ggplot is also a very good data drawing tool in general. This tutorial shows how to create a population inforgraphic and along the way points out a number of ggplot features you should become familiar with to get the most out of your data vizes.
+
+#Packages
+```{r results='hide', message=F, warning=F}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(RColorBrewer)
+library(grid)
+```
+
+#Data
+This graphic was originally developed to simultaneously show 2 concepts:
+ 1: that we took into account certain population categories in our analysis, and
+ 2: that the target population of interest was actually quite small relative to the whole
+ 
+We'll use US federal budget data in this tutorial. I downloaded table 5.2 from the [White House Budget Site](https://www.whitehouse.gov/omb/budget/Historicals), deleted the top 2 rows, saved it as a tab deliminated text file, and then did a bunch of preprocessing in R (not shown). After all that manipulation, you end up with a small data frame (actually a ["tibble"](https://blog.rstudio.org/2016/03/24/tibble-1-0-0/) because of dplyr) that contains the total FY 2015 Budget Authority in millions of dollars for the top 10 federal agencies, plus all others rolled up into Other.
+
+##Basic Data Load
+```{r, echo=F, results='hide'}
+#lets start with a clean slate
+rm(list=ls())
+#make sure you're in the right working directory - currently a manual process
+setwd("O:/CAPE_Org/PDES/PRISM/Sullivan/Misc Tasks/SotF/tile diagram writeup")
+source("budget data processing.R") #this will leave you with some data.frames, the one we want is targetdata.top
+```
+
+```{r}
+print(targetdata.top)
+```
+
+
+##Custom Data Structure
+The graphic will use ggplot's tile geom to draw one box per X units in our data set. The first step, therefore, is to build a fake or scaffold dataset that specifies the x and y coordinates of those boxes plus any formatting information. In this case, we want to draw N boxes for each agency, where N = (millions of dollars budgeted for that agency in one year)/X. 
+
+```{r}
+#for every category of interest in our main data set, repeat that category as many times as needed to get val/scale boxes (rounded up to the nearest integer) - note have to remove the NAs in millions or the rep function fails
+
+scale <- 1000 #how many units per box?
+scaffold.tmp <- with(targetdata.top, rep(agency, ceiling(millions/scale)))
+```
+
+If all goes well, we should get a vector with around `r sprintf("%.f",sum(targetdata.source$millions)/scale)` entries, plus a few more because we rounded up the count for each category. Length of our new variable is `r length(scaffold.tmp)`.
+
+This scaffold vector will serve as the basis for our scaffold data frame. We need to create x and y coordinates, where x runs from 1 to the total number of columns and y runs from 1 to the total number of rows. If I want my infographic to be 50 columns wide, then I will need $length(scaffold.tmp)/50 = `r length(scaffold.tmp)/50`$ rows to draw all the tiles.
+
+###An asside on formatting
+There are several ways you can layout the infographic. You could layout the tiles in one continuous rectagle or you could start a new row for each new category. You can specify a certain number of rows or a certain number of columns. I prefer starting a new row for each new category, but the R chunk below provides a function for either approach. I also implemented with a taget number of columns parameter. Doing this with a row restriction is, as they say, left as an exercise for the reader.
+
+```{r}
+#this version sequences the tiles continuously
+continuous_frame <- function(scaffold.vector, target.cols=50){
+  n <- length(scaffold.vector)
+  target.rows <- ceiling(n/target.cols)  
+  indexframe <- data.frame(coli = rep(c(1:target.cols), target.rows),
+                           rowi = rep(1:target.rows, each=target.cols))
+  frame <- data.frame(fill=scaffold.vector, indexframe[1:n,])
+  frame$fill <- factor(frame$fill, levels=unique(scaffold.vector))
+  
+  return(frame)
+}
+
+#this version starts a new row for each cateogry
+incremental_frame <- function(scaffold.vector, target.cols=50){
+  increment <- 0
+  frame <- data.frame()
+  for (bin in unique(scaffold.vector)){
+    subfill <- scaffold.vector[which(scaffold.vector==bin)]
+    n <- length(subfill)
+    target.rows <- ceiling(n/target.cols)
+    coli <- rep(1:min(n,target.cols), target.rows) #if n < cols, rows should be = 1
+    rowi <- rep(1:target.rows, each=min(n,target.cols)) + increment
+    
+    frame <- rbind(frame, data.frame(fill=subfill, coli=coli[1:n], rowi=rowi[1:n]))
+    
+    increment <- increment + target.rows + 1 #+1 adds a blank row between each category
+  }
+  return(frame)
+}
+
+```
+
+Lets see if it worked
+```{r}
+## note fill=fill is setting the colors of the tiles while color="black" is setting the borders of the tiles, the color parameter is outside the aes() block because it does not reference a column in the source data
+ggplot(incremental_frame(scaffold.tmp)) + geom_tile(aes(x=coli, y=rowi, fill=fill), color="black")
+ggplot(continuous_frame(scaffold.tmp)) + geom_tile(aes(x=coli, y=rowi, fill=fill), color="black")
+```
+
+#The power of formatting
+Ok, so that sort of worked, but there is a lot of formatting we need to do to make this useable:
+
+1. Flip the vertical axis so the short row is at the bottom
+2. Remove the axes and background chart junk and scale the legend
+3. Make the colors pretty
+4. Add some helpful labels
+
+As with all things in R, there are several ways to accomplish each of these items. The [Cookbook for R](http://www.cookbook-r.com/Graphs) is a good quick reference for common ggplot formatting tools. 
+
+We are going to tackle each modification individually and then roll them all up into a nice formatting function. This appraoch takes advantage the ability to asign a ggplot object to a variable and add geoms or formatting elements using that variable:
+```{r}
+scaffold.vec <- incremental_frame(scaffold.tmp) #we're going to need this as a separate object later
+tmpp <- ggplot(scaffold.vec) + geom_tile(aes(x=coli, y=rowi, fill=fill), color="black") #we'll use this as we walk through the formatting elements
+```
+
+Let's go through each piece individually.
+
+##Reverse the axis
+This one is pretty self explanatory
+```{r}
+tmpp <- tmpp + scale_y_reverse()
+tmpp
+```
+
+Notice that the partial lines are now at the bottom of each section.
+
+##Remove chart objects and scale the legend
+The settings to get rid of the chart background, gridlines, and axis elements are found within the [theme](http://docs.ggplot2.org/0.9.3.1/theme.html) function. The element\_blank() parameter turns off whatever theme element it is assigned to. You can also change the legend properties within theme() - or you can investigate the [guide\_legend](http://docs.ggplot2.org/0.9.3.1/guide_legend.html) function, which provides some additional legend controls like number of rows and columns.
+
+```{r}
+apply_formatting <- function(myplt){
+  pnew <- myplt + theme(axis.line=element_blank(),
+                        axis.title=element_blank(),
+                        axis.ticks=element_blank(),
+                        axis.text=element_blank(),
+                        panel.background=element_blank(),
+                        panel.grid=element_blank(),
+                        legend.title=element_blank(),
+                        legend.key.size=unit(4, "mm"),
+                        legend.text=element_text(size=8),
+                        legend.position="left",
+                        plot.title=element_text(hjust=1, size=8))
+  return(pnew)
+}
+#check results
+tmpp <- apply_formatting(tmpp)
+tmpp
+```
+
+##Make the colors pretty
+You can modify the colors in ggplot using the "scale_*" series of functions. This is one of those features for which there are way too many ways to accomplish your task. The two key things to know are 
+
+1. You need to provide EITHER keywords referencing one of ggplot's known set of color scales OR a vector of hexidecimal colors
+2. If you are designating colors for a discrete variable, colors will be applied in the order that your variable appears in your data (or was listed in the factor definition, if a factor) UNLESS you specifically name your color vector with the variable values
+
+I'll demonstrate both the "known color scale" (Method 1) and the "hexidecmial vector" (Method 2) approaches.
+
+###An Asside on Finding Colors
+The [Colors](http://www.cookbook-r.com/Graphs/Colors_(ggplot2)/#rcolorbrewer-palette-chart) page has a reference at the end for ColorBrewer palettes, which are perception-research backed palettes for qulaitative scales. These palettes can be accessed in R using the RColorBrewer package, which was loaded at the top of this tutorial. 
+
+###Method 1: Telling ggplot to use RColorBrewer palettes
+```{r}
+tmpp + scale_fill_brewer(palette="Spectral")
+```
+
+Another way to use ColorBrewer palettes in ggplot: by specifying the scale type and letting ggplot select a palette
+```{r}
+tmpp + scale_fill_brewer(type="qual")
+```
+
+Whoops that pallete didn't have enough entries. (rant\_on: There are qualitiative ColorBrewer palettes with 11 values. I'm annoyed that ggplot isn't smart enough to figure that out. rant\_off)
+
+###Method 2: Assigning color codes to a vector
+For more manual control, you can get the hexadecimal codes for ColorBrewer at the [ColorBrewer website](http://colorbrewer2.org/#type=sequential&scheme=BuGn&n=3) or by investigating helper fucntions within the RColorBrewer pacakge like brewer.pal() in the chunk below.
+```{r}
+fillcolors <- c(brewer.pal(n=9, name="Spectral"), "#CCCCCC", "#999999")
+exceptions <- c("Other", "Undistributed Offsetting Receipts")
+names(fillcolors) <- c(filter(targetdata.top, ! agency %in% exceptions)$agency, exceptions)
+fillcolors #to show the output of the brewer.pal() function
+
+tmpp <- tmpp + scale_fill_manual(values=fillcolors) 
+tmpp
+```
+
+This isn't bad. If you wanted to stop here and do the final polishing by hand in power point or whatever presentation medium you are required to use, I wouldn't blame you. But, if you bear with me through this next chunk of code, we'll automatically handle a lot of that formatting.
+
+##Add some helpful labels
+Finally we'll do a little bit more data manipulation magic to add some reference lables to our plot. We will create four categories of labels:
+
+1. Agency - placed to the left of each block
+2. Starting row - put a 1 to the left of the first row of each block
+3. Ending row - place the total number of rows in each block to the left of the last row
+4. Total amount - place the total amount represented in each block to the right of the last row, format the number to something reasonable (e.g. 1234k not 1234001.21234)
+
+This chunk creates a dataframe with those labels and the x and y placement.
+```{r}
+#function to label each sub-frame section
+makelabels <- function(subframe, n, scale=1000, scale_lbl="k"){
+  binname <- subframe$fill[1] #pull current bin label off first row
+  
+  #four labels for each bin: bin name, starting row, ending row, and total n
+  rowlabels <- rbind(data.frame(bintxt = as.character(binname), #bin name label position at start of section, offset one column to the left
+                                rowtxt=NA,
+                                totaltxt=NA,
+                                coli=-1,
+                                rowi=floor((min(subframe$rowi) + max(subframe$rowi))/2),
+                                stringsAsFactors=F),
+                     #label the first row of each section as 1
+                     data.frame(bintxt=NA, 
+                                rowtxt="1",
+                                totaltxt=NA,
+                                coli=0,
+                                rowi=min(subframe$rowi),
+                                stringsAsFactors=F),
+                     #if > 1 row, label the last row of each section with the number of rows spanned by this section
+                     data.frame(bintxt=NA, 
+                                rowtxt=ifelse(max(subframe$rowi)==min(subframe$rowi), NA, sprintf("%d", max(subframe$rowi)-min(subframe$rowi)+1)),
+                                totaltxt=NA,
+                                coli=0,
+                                rowi=max(subframe$rowi),
+                                stringsAsFactors=F),
+                     #print total obs (n) after the last cell, round to the nearest scale or .# (if n<scale)
+                     data.frame(bintxt=NA, 
+                                rowtxt=NA,
+                                totaltxt=ifelse(n<scale, sprintf("%.1f%s", n/scale, scale_lbl), sprintf("%d%s", ceiling(n/scale), scale_lbl)),
+                                coli=max(subframe$coli)+1,
+                                rowi=max(subframe$rowi),
+                                stringsAsFactors=F))
+  return(rowlabels)
+}
+
+#wrapper function to operate on each agency
+labelwrapper <- function(scaffold.vector, mydata, binvar,nvar, myscale=1000, myscale_lbl="k"){
+  newframe <- data.frame()
+  for(bin in mydata[[binvar]]){ #ran into problems with tbls v dfs here
+    newframe <- rbind(newframe, makelabels(subframe=scaffold.vector[scaffold.vector$fill==bin,], #scaffold.vector is a df
+                                           n=mydata[(mydata[,binvar]==bin), ][[nvar]], #mydata is a tbl as a result of dplyr
+                                           scale=myscale,
+                                           scale_lbl=myscale_lbl))
+  }
+  return(newframe)
+}
+
+mylabels <- labelwrapper(scaffold.vector=scaffold.vec, mydata=targetdata.top, binvar="agency", nvar="millions", myscale=scale, myscale_lbl="B")
+```
+
+This chunk adds text geoms to our plot, one for each type of label (1st and last row numbers are treated together), turns off the legend - since it is now redundant - and expands the boundaries of the plot so the new agency labels are fully shown.
+```{r}
+tmpp + geom_text(data=mylabels, aes(label=rowtxt, x=coli, y=rowi, hjust=1), size=2, show.legend=F, na.rm=TRUE) +
+       geom_text(data=mylabels, aes(label=totaltxt, x=coli, y=rowi, hjust=0), size=2, show.legend=F, na.rm=TRUE) +
+       geom_text(data=mylabels, aes(label=bintxt, x=coli, y=rowi, hjust=1), size=3, show.legend=F, na.rm=TRUE) +
+       expand_limits(x=c(-40, 52)) + guides(fill=F)
+```
+
+Tada! There you go: a custom infographic using just basic R data manipulation and ggplot elements. 
+
+#Save your work
+The last thing to do is to save the graphic for use elsewhere. Introducing my favotrite ggplot function: ggsave. Never ever click that export button in RStudio again. ggsave saves the last rendered ggplot to the location you specify with the sizing attributes you specify. File type is controlled by the extension you specify (e.g. ".pdf" or ".png").
+```{r}
+ggsave("my tile plot.png", dpi=300, w=8, h=6)
+```
